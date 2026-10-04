@@ -59,6 +59,16 @@ interviewRouter.post('/:id/start', async (req, res) => {
   }
 });
 
+/** Clear a finished attempt and place a fresh outbound call. */
+interviewRouter.post('/:id/redial', async (req, res) => {
+  try {
+    const interview = await interviewService.redial(req.params.id);
+    res.json({ data: interview });
+  } catch (error) {
+    handleError(error, res);
+  }
+});
+
 interviewRouter.post('/:id/simulate', async (req, res) => {
   try {
     const interview = await interviewService.simulate(req.params.id);

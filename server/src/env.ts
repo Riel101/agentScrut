@@ -55,11 +55,12 @@ const schema = z.object({
   PHONE_REGION: z.enum(['us', 'uk', 'eu', 'ng']).default('ng'),
   PHONE_OUTBOUND_MINUTES: z.coerce.number().int().positive().default(120),
 
-  // When true, outbound WhatsApp uses the agent's BimpeAI *test* channel (each
-  // recipient must opt in first). Set false for a connected production channel.
+  // Outbound WhatsApp uses the agent's BimpeAI *test* channel by default. The
+  // test channel only responds once the owner has texted first (opt-in plus
+  // WhatsApp's session window). Set false for a connected production channel.
   WHATSAPP_TEST_CHANNEL: z
     .string()
-    .default('false')
+    .default('true')
     .transform((value) => value.toLowerCase() !== 'false'),
 
   DATA_DIR: z.string().default('data'),

@@ -14,6 +14,7 @@ export function InterviewDetail({
   events,
   busy,
   onStart,
+  onRedial,
   onSimulate,
   onReevaluate,
   onSendSummary,
@@ -24,6 +25,7 @@ export function InterviewDetail({
   events: InterviewEvent[];
   busy: boolean;
   onStart: () => void;
+  onRedial: () => void;
   onSimulate: () => void;
   onReevaluate: () => void;
   onSendSummary: () => void;
@@ -64,6 +66,7 @@ export function InterviewDetail({
             )}
             {finished && (
               <>
+                <Button onClick={onRedial} disabled={busy}>Call again</Button>
                 {interview.transcript.length > 0 && (
                   <Button variant="secondary" onClick={onReevaluate} disabled={busy}>Re-evaluate</Button>
                 )}
@@ -133,19 +136,15 @@ export function InterviewDetail({
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Summary to owner</h3>
               <Badge
-                value={interview.summary ? (interview.summaryError ? 'failed' : 'sent') : 'pending'}
-                label={interview.summary ? (interview.summaryError ? 'Not delivered' : 'Sent') : 'Pending'}
+                value={interview.summary ? 'sent' : 'pending'}
+                label={interview.summary ? 'Sent' : 'Pending'}
               />
             </div>
             <p className="text-xs text-slate-500">
-              The Hiring Assistant sends a short summary of this candidate to the owner on WhatsApp, and answers
+              The Hiring Assistant sends a short summary of this candidate to the owner on WhatsApp
+              (test channel — it delivers once the owner has texted the assistant), and answers
               follow-up questions about every candidate.
             </p>
-            {interview.summaryError && (
-              <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-200">
-                {interview.summaryError}
-              </p>
-            )}
             {interview.summary ? (
               <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap rounded-lg bg-slate-950/60 p-3 text-xs text-slate-300">
                 {interview.summary}

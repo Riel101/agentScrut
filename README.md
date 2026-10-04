@@ -89,7 +89,7 @@ npm start         # Express serves the API and the built UI on :8787
 | `INTERVIEW_PASS_THRESHOLD` | `70` | Score at/above which a candidate is considered qualified. |
 | `INTERVIEWER_AGENT_NAME` / `EVALUATOR_AGENT_NAME` / `ASSISTANT_AGENT_NAME` | see `.env.example` | Stable agent names used for idempotent provisioning. |
 | `OWNER_WHATSAPP` | — | Owner's WhatsApp number (E.164) that receives post-interview summaries and can message the Hiring Assistant. |
-| `WHATSAPP_TEST_CHANNEL` | `false` | Use the BimpeAI test WhatsApp channel (recipient must opt in with `start <CODE>`). |
+| `WHATSAPP_TEST_CHANNEL` | `true` | Use the BimpeAI test WhatsApp channel (owner must text first with `start <CODE>`). Set `false` for a production channel. |
 | `PHONE_*` | see `.env.example` | Telephony number provisioning request details. |
 
 ---
@@ -106,19 +106,25 @@ BimpeAI side (the backend promotes all agents to `live` automatically at setup):
    channel. If `voice` is `paused`, outbound calls are accepted but **stay queued** and the candidate's
    phone never rings. This is a dashboard setting; the SDK only exposes `channels.list` (read-only).
    The app surfaces the warning on the status panel and `GET /api/status`.
-3. **Assistant WhatsApp channel** — the Hiring Assistant sends the post-interview summary and answers
-   the owner's questions over WhatsApp. Connect a **production** WhatsApp Business channel to the
-   assistant agent in the BimpeAI dashboard and set `OWNER_WHATSAPP` to the owner's E.164 number.
-   For local testing without a production channel, set `WHATSAPP_TEST_CHANNEL=true`: the recipient
-   must then opt in first by sending `start <CODE>` to BimpeAI's test number. Until then,
-   `conversations.send` returns `WhatsApp test user not found`, the summary is stored on the interview
-   (with a retry button and the `summaryError` shown), and the knowledge base is still refreshed.
+3. **Assistant WhatsApp channel** — the Hiring Assistant sends the post-interview summary and
+   answers the owner's questions over WhatsApp, using BimpeAI's **test** channel by default
+   (`WHATSAPP_TEST_CHANNEL=true`). The test channel only responds once the owner has texted
+   first: send `start <CODE>` to the test number shown in the status panel (this both opts the
+   number in and opens WhatsApp's session window for the reply). Set `OWNER_WHATSAPP` to the
+   owner's E.164 number. For a persistent connection with no opt-in step, connect a **production**
+   WhatsApp Business channel to the assistant agent in the BimpeAI dashboard and set
+   `WHATSAPP_TEST_CHANNEL=false`.
 4. **Call transcription** — in the current API build, live **telephony** calls do **not** surface
-   turns through `calls.retrieve().conversation_logs` *or* the matching telephony conversation, even
-   after the call ends. The `voice` and `whatsapp` conversations do persist messages, so the backend
-   already merges **both** transcript sources and will pick transcription up automatically once it is
-   available. Until then, a completed call with no transcript can still be scored by pasting it into
-   the **Live transcript** panel or calling `POST /api/interviews/:id/transcript`.
+   turns through `calls.retrieve().conversation_logs` *or* the matching telephony conversation
+   (verified live: transcript endpoints return 404, and the telephony conversations hold zero
+   messages even after answered, multi-minute calls). The backend already merges **every**
+   transcript source the platform exposes — call logs plus all matching telephony/test-telephony
+   conversations, with tolerant parsing of alternate message shapes — and will pick transcription
+   up automatically once it is available. Until then, a completed call with no transcript can still
+   be scored by pasting it into the **Live transcript** panel or calling
+   `POST /api/interviews/:id/transcript`. During each call the backend additionally holds the
+   conversation's live message stream open, so if the platform ever publishes (but doesn't persist)
+   call turns, they still appear on screen.
 
 Every interview also has a **Simulate** button that injects a realistic transcript so the scoring +
 summary pipeline is fully demoable without a live call.
@@ -163,9 +169,15 @@ conversation return no turns for live calls. After the call ends the backend wai
 > Hi BimpeAI team — we're building an interview product on `@bimpeai/sdk` (agent + telephony channel).
 > Outbound calls complete and connect, but `GET /agents/{id}/calls/{callId}` returns
 > `conversation_logs: []` and the matching `telephony` conversation has `messages: []`, while `voice`
-> and `whatsapp` conversations store messages normally. How do we **enable call transcription** for
-> telephony, and is it delivered via `conversation_logs`, the telephony conversation, or a webhook?
-> If there is a transcript webhook, please share the payload shape and how to configure it.
+> and `whatsapp` conversations store messages normally. We checked every agent, every channel
+> (`telephony`, `test_telephony`, `voice`), all sort/limit variants of `messages.list`, and the live
+> conversation stream during a call — no call turns are exposed anywhere. How do we **enable call
+> transcription** for telephony, and is it delivered via `conversation_logs`, the telephony
+> conversation, or a webhook? If there is a transcript webhook, please share the payload shape and
+> how to configure it.
+>
+> Separately, one answered 40s call ended with `end_reason: "tts_hard_failure"` — please advise what
+> causes this and whether it indicates a problem with the voice pipeline on our agent.
 
 ---
 
@@ -182,6 +194,7 @@ conversation return no turns for live calls. After the call ends the backend wai
 | `GET` | `/api/interviews/:id` | Interview detail (transcript, scorecard, summary). |
 | `GET` | `/api/interviews/:id/events` | **SSE** stream of progress (replays history). |
 | `POST` | `/api/interviews/:id/start` | Place the outbound call. |
+| `POST` | `/api/interviews/:id/redial` | Clear a finished attempt and call the candidate again. |
 | `POST` | `/api/interviews/:id/simulate` | Inject a synthetic transcript, then score + summarise. |
 | `POST` | `/api/interviews/:id/evaluate` | Re-run the evaluator agent + summary. |
 | `POST` | `/api/interviews/:id/transcript` | Import a transcript (`transcript` text or `turns[]`), then score + summarise. |

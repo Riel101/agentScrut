@@ -33,6 +33,8 @@ export const api = {
     }),
   startInterview: (id: string) =>
     request<{ data: InterviewRecord }>(`/api/interviews/${id}/start`, { method: 'POST', body: '{}' }),
+  redialInterview: (id: string) =>
+    request<{ data: InterviewRecord }>(`/api/interviews/${id}/redial`, { method: 'POST', body: '{}' }),
   simulateInterview: (id: string) =>
     request<{ data: InterviewRecord }>(`/api/interviews/${id}/simulate`, {
       method: 'POST',
@@ -78,6 +80,7 @@ export function subscribeToInterview(
     'provisioning',
     'calling',
     'call_started',
+    'redial',
     'in_progress',
     'transcript',
     'call_ended',

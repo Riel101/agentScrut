@@ -5,9 +5,9 @@ import type { TranscriptTurn } from '../types.js';
 /**
  * Transcript helpers. BimpeAI can surface a telephony call's turns in two
  * independent places — the call's `conversation_logs` and the matching
- * `telephony` conversation. These helpers normalise, merge, and de-duplicate
- * both so the pipeline works whichever one the platform populates (and the
- * moment call transcription is enabled).
+ * conversation's messages. These helpers normalise, merge, and de-duplicate
+ * every source so the pipeline works whichever one the platform populates (and
+ * the moment call transcription is enabled).
  */
 
 const ASSISTANT_LABELS = new Set([
@@ -54,20 +54,44 @@ export function normalizeRole(role: string): string {
   return knownSpeaker(role) ?? (role.trim().toLowerCase() || 'user');
 }
 
+/** A turn in whatever shape the platform returns it (keys vary by channel). */
 interface RawTurn {
-  id?: string | null;
-  role?: string | null;
-  message?: string | null;
-  created_at?: string | null;
-  createdAt?: string | null;
+  id?: unknown;
+  message_id?: unknown;
+  role?: unknown;
+  speaker?: unknown;
+  sender?: unknown;
+  from?: unknown;
+  message?: unknown;
+  content?: unknown;
+  text?: unknown;
+  body?: unknown;
+  transcript?: unknown;
+  created_at?: unknown;
+  createdAt?: unknown;
+  timestamp?: unknown;
+  time?: unknown;
+}
+
+const asText = (value: unknown): string =>
+  typeof value === 'string' ? value : value == null ? '' : String(value);
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = asText(value).trim();
+    if (text) return text;
+  }
+  return '';
 }
 
 export function turnFromRaw(entry: RawTurn, fallbackId: string): TranscriptTurn {
   return {
-    id: entry.id ?? fallbackId,
-    role: normalizeRole(entry.role ?? 'user'),
-    message: (entry.message ?? '').trim(),
-    createdAt: entry.created_at ?? entry.createdAt ?? new Date().toISOString(),
+    id: firstText(entry.id, entry.message_id) || fallbackId,
+    role: normalizeRole(firstText(entry.role, entry.speaker, entry.sender, entry.from) || 'user'),
+    message: firstText(entry.message, entry.content, entry.text, entry.body, entry.transcript),
+    createdAt:
+      firstText(entry.created_at, entry.createdAt, entry.timestamp, entry.time) ||
+      new Date().toISOString(),
   };
 }
 
@@ -87,35 +111,68 @@ export function mergeTurns(
 
 const digits = (value: string | null | undefined): string => (value ?? '').replace(/\D/g, '');
 
-/** Find the telephony conversation that belongs to a candidate phone number. */
-export async function resolveTelephonyConversation(
+interface ConversationCandidate {
+  id: string;
+  channelType: string;
+  userId: string | null;
+}
+
+async function listCandidates(
   agentId: string,
-  phone: string,
-): Promise<string | null> {
-  const queries = [
-    { search: phone, limit: 50, sort: '-created_at' } as const,
-    { limit: 100, sort: '-created_at' } as const,
+  query: Record<string, string | number | boolean>,
+): Promise<ConversationCandidate[]> {
+  try {
+    const page = await bimpe.conversations.list(agentId, query);
+    return page.data.map((conversation) => ({
+      id: conversation.id,
+      channelType: conversation.channel_type,
+      userId: conversation.channel_user_id,
+    }));
+  } catch (error) {
+    logger.warn('Could not list conversations', {
+      agentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+/**
+ * Find every conversation that could hold a call's turns for a candidate phone
+ * number: `telephony`/`test_telephony` conversations addressed to that number,
+ * plus any `voice` conversation whose user id digit-matches (some builds log
+ * calls there). Ordered most-likely first.
+ */
+export async function resolveCallConversations(agentId: string, phone: string): Promise<string[]> {
+  const wanted = digits(phone);
+  const queries: Array<Record<string, string | number | boolean>> = [
+    { channel: 'telephony', limit: 50, sort: '-created_at' },
+    { channel: 'test_telephony', limit: 50, sort: '-created_at' },
+    { search: phone, limit: 50, sort: '-created_at' },
+    { limit: 100, sort: '-created_at' },
   ];
 
+  const seen = new Map<string, ConversationCandidate>();
   for (const query of queries) {
-    try {
-      const page = await bimpe.conversations.list(agentId, query);
-      const telephony = page.data.filter((conversation) => conversation.channel_type === 'telephony');
-      const match = telephony.find(
-        (conversation) =>
-          conversation.channel_user_id === phone ||
-          (digits(conversation.channel_user_id) !== '' &&
-            digits(conversation.channel_user_id) === digits(phone)),
-      );
-      if (match) return match.id;
-    } catch (error) {
-      logger.warn('Could not list telephony conversations', {
-        agentId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    for (const candidate of await listCandidates(agentId, query)) {
+      if (!seen.has(candidate.id)) seen.set(candidate.id, candidate);
     }
   }
-  return null;
+
+  const matches = (candidate: ConversationCandidate): boolean =>
+    wanted !== '' && digits(candidate.userId) !== '' && digits(candidate.userId) === wanted;
+
+  const telephony: string[] = [];
+  const voice: string[] = [];
+  for (const candidate of seen.values()) {
+    if (!matches(candidate)) continue;
+    if (candidate.channelType === 'telephony' || candidate.channelType === 'test_telephony') {
+      telephony.push(candidate.id);
+    } else if (candidate.channelType === 'voice') {
+      voice.push(candidate.id);
+    }
+  }
+  return [...telephony, ...voice];
 }
 
 /** Read the persisted turns of a conversation, if any. */
@@ -123,21 +180,28 @@ export async function fetchConversationTurns(
   agentId: string,
   conversationId: string,
 ): Promise<TranscriptTurn[]> {
-  try {
-    const page = await bimpe.conversations.messages.list(agentId, conversationId, {
-      limit: 100,
-      sort: 'created_at',
-    });
-    return page.data
-      .map((message, index) => turnFromRaw(message, `${conversationId}-${index}`))
-      .filter((turn) => turn.message.length > 0);
-  } catch (error) {
-    logger.warn('Could not read conversation transcript', {
-      conversationId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return [];
+  // Query twice with opposite sort orders and merge: if the platform ever
+  // ignores one variant we still capture the turns.
+  const variants = [{ limit: 100, sort: 'created_at' }, { limit: 100, sort: '-created_at' }];
+  const lists: TranscriptTurn[][] = [];
+  for (const [index, query] of variants.entries()) {
+    try {
+      const page = await bimpe.conversations.messages.list(agentId, conversationId, query);
+      lists.push(
+        page.data
+          .map((message, messageIndex) =>
+            turnFromRaw(message, `${conversationId}-v${index}-${messageIndex}`),
+          )
+          .filter((turn) => turn.message.length > 0),
+      );
+    } catch (error) {
+      logger.warn('Could not read conversation transcript', {
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
+  return mergeTurns(...lists);
 }
 
 /**

@@ -17,7 +17,6 @@ systemRouter.get('/status', async (_req, res) => {
   const assistant = db.getAgent('assistant');
   const warnings: string[] = [];
   let channels: Array<{ id: string; type: string; name: string; status: string; is_connected: boolean }> = [];
-  let assistantChannels: Array<{ id: string; type: string; name: string; status: string; is_connected: boolean }> = [];
 
   if (interviewer) {
     try {
@@ -36,22 +35,6 @@ systemRouter.get('/status', async (_req, res) => {
     } catch {
       warnings.push('Could not read the interviewer agent channels.');
     }
-  }
-
-  if (assistant) {
-    try {
-      assistantChannels = [...(await bimpe.agents.channels.list(assistant.agentId))];
-      const whatsapp = assistantChannels.find((channel) => channel.type === 'whatsapp');
-      if (!whatsapp) {
-        warnings.push('The Hiring Assistant has no WhatsApp channel connected; interview summaries cannot be delivered.');
-      } else if (whatsapp.status !== 'enabled' && whatsapp.status !== 'connected') {
-        warnings.push(`The Hiring Assistant's WhatsApp channel is "${whatsapp.status}".`);
-      }
-    } catch {
-      warnings.push('Could not read the Hiring Assistant channels.');
-    }
-  } else {
-    warnings.push('The Hiring Assistant is not provisioned yet; run setup to create it.');
   }
 
   if (!env.OWNER_WHATSAPP) {
@@ -81,7 +64,6 @@ systemRouter.get('/status', async (_req, res) => {
       assistant,
     },
     channels,
-    assistantChannels,
     warnings,
     phoneNumbers: numbers,
   });

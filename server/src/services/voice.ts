@@ -4,7 +4,7 @@ import type { TranscriptTurn } from '../types.js';
 import {
   fetchConversationTurns,
   mergeTurns,
-  resolveTelephonyConversation,
+  resolveCallConversations,
   turnFromRaw,
 } from './transcript.js';
 
@@ -34,8 +34,8 @@ const TERMINAL_STATUSES = new Set(['ended', 'busy', 'failed', 'cancelled']);
 class BimpeVoiceProvider implements VoiceProvider {
   readonly name = 'bimpe';
 
-  /** Cache call -> telephony conversation id so we resolve it only once. */
-  private conversationCache = new Map<string, string>();
+  /** Cache call -> candidate conversation ids so we resolve them only once. */
+  private conversationCache = new Map<string, string[]>();
 
   async startCall(agentId: string, destination: string): Promise<{ callId: string }> {
     const result = await bimpe.calls.make(agentId, {
@@ -56,23 +56,25 @@ class BimpeVoiceProvider implements VoiceProvider {
       turnFromRaw(entry, `${callId}-log-${index}`),
     );
 
-    // Some builds record the call as a telephony conversation instead of (or as
-    // well as) conversation_logs, so merge both sources.
-    let conversationTurns: TranscriptTurn[] = [];
+    // Some builds record the call in conversation(s) instead of (or as well as)
+    // conversation_logs, so merge every candidate source.
+    const conversationLists: TranscriptTurn[][] = [];
     if (detail.destination) {
-      let conversationId = this.conversationCache.get(callId);
-      if (!conversationId) {
-        conversationId = (await resolveTelephonyConversation(agentId, detail.destination)) ?? undefined;
-        if (conversationId) this.conversationCache.set(callId, conversationId);
+      let conversationIds = this.conversationCache.get(callId);
+      if (!conversationIds) {
+        conversationIds = await resolveCallConversations(agentId, detail.destination);
+        this.conversationCache.set(callId, conversationIds);
       }
-      if (conversationId) conversationTurns = await fetchConversationTurns(agentId, conversationId);
+      for (const conversationId of conversationIds) {
+        conversationLists.push(await fetchConversationTurns(agentId, conversationId));
+      }
     }
 
     return {
       callId: detail.id,
       status: detail.status,
       durationSeconds: detail.duration_seconds,
-      transcript: mergeTurns(callTurns, conversationTurns),
+      transcript: mergeTurns(callTurns, ...conversationLists),
       answered: Boolean(detail.answered_at),
       ended: TERMINAL_STATUSES.has(detail.status),
       errorReason: detail.error_reason,

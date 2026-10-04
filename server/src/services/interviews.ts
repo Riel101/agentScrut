@@ -13,7 +13,7 @@ import type {
 } from '../types.js';
 import { evaluateInterview } from './evaluator.js';
 import { ensureProvisioned } from './provisioning.js';
-import { normalizeRole, parseTranscriptText, mergeTurns } from './transcript.js';
+import { normalizeRole, parseTranscriptText, mergeTurns, resolveCallConversations } from './transcript.js';
 import { getVoiceProvider } from './voice.js';
 import { notifyInterview } from './assistant.js';
 
@@ -31,6 +31,7 @@ export class InterviewService {
   private pollTimers = new Map<string, NodeJS.Timeout>();
   private capTimers = new Map<string, NodeJS.Timeout>();
   private ringTimers = new Map<string, NodeJS.Timeout>();
+  private streamControllers = new Map<string, AbortController>();
   private polling = new Set<string>();
 
   list(): InterviewRecord[] {
@@ -206,6 +207,14 @@ export class InterviewService {
       }, env.INTERVIEW_RING_TIMEOUT_SECONDS * 1000);
       this.ringTimers.set(id, ring);
     }
+
+    // Best-effort live capture: stream the call's conversation(s) for turns as
+    // they happen. If the platform only publishes (never persists) call turns,
+    // this is what puts them on screen. Failures are silent; polling stays
+    // the source of truth.
+    const controller = new AbortController();
+    this.streamControllers.set(id, controller);
+    this.watchStream(id, controller.signal);
   }
 
   private clearTimers(id: string): void {
@@ -220,12 +229,113 @@ export class InterviewService {
     const ring = this.ringTimers.get(id);
     if (ring) clearTimeout(ring);
     this.ringTimers.delete(id);
+
+    const stream = this.streamControllers.get(id);
+    if (stream) stream.abort();
+    this.streamControllers.delete(id);
   }
 
   private clearRingTimer(id: string): void {
     const ring = this.ringTimers.get(id);
     if (ring) clearTimeout(ring);
     this.ringTimers.delete(id);
+  }
+
+  /**
+   * Follow the call's conversation stream(s) and append live turns to the
+   * record. Purely additive: every failure is swallowed, polling remains the
+   * source of truth, and duplicates are filtered by id and content.
+   */
+  private watchStream(id: string, signal: AbortSignal): void {
+    void (async () => {
+      try {
+        let agentId: string | null = null;
+        let phone: string | null = null;
+        for (let attempt = 0; attempt < 20 && !signal.aborted; attempt++) {
+          const record = db.getInterview(id);
+          if (!record || TERMINAL_INTERVIEW_STATUSES.has(record.status)) return;
+          if (record.agentId && record.callId) {
+            agentId = record.agentId;
+            phone = record.candidatePhone;
+            break;
+          }
+          await sleep(3000);
+        }
+        if (!agentId || !phone || signal.aborted) return;
+
+        let conversationIds: string[] = [];
+        for (let attempt = 0; attempt < 24 && !signal.aborted; attempt++) {
+          conversationIds = await resolveCallConversations(agentId, phone);
+          if (conversationIds.length > 0) break;
+          await sleep(5000);
+        }
+        if (conversationIds.length === 0 || signal.aborted) return;
+
+        const agent = agentId;
+        await Promise.all(
+          conversationIds.map((conversationId) =>
+            this.streamConversation(id, agent, conversationId, signal),
+          ),
+        );
+      } catch (error) {
+        if (!signal.aborted) {
+          logger.warn('Conversation stream watcher stopped', {
+            interviewId: id,
+            error: describeError(error),
+          });
+        }
+      }
+    })();
+  }
+
+  private async streamConversation(
+    id: string,
+    agentId: string,
+    conversationId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      let index = 0;
+      const stream = bimpe.conversations.messages.stream(agentId, conversationId, {
+        signal,
+        maxRetries: 50,
+      });
+      for await (const event of stream) {
+        if (signal.aborted) return;
+        const message = (event.message ?? '').trim();
+        if (!message) continue;
+        const turn: TranscriptTurn = {
+          id: event.id || `stream-${conversationId}-${index++}`,
+          role: normalizeRole(event.role ?? 'user'),
+          message,
+          createdAt: event.created_at ?? new Date().toISOString(),
+        };
+        const record = db.getInterview(id);
+        if (!record || TERMINAL_INTERVIEW_STATUSES.has(record.status)) return;
+        const known = record.transcript.some(
+          (existing) =>
+            existing.id === turn.id ||
+            (existing.role === turn.role &&
+              existing.message === turn.message &&
+              existing.createdAt === turn.createdAt),
+        );
+        if (known) continue;
+        db.updateInterview(id, { transcript: [...record.transcript, turn] });
+        interviewBus.publish(id, 'transcript', turn.message, {
+          turnId: turn.id,
+          role: turn.role,
+          createdAt: turn.createdAt,
+        });
+      }
+    } catch (error) {
+      if (!signal.aborted) {
+        logger.warn('Conversation stream ended early', {
+          interviewId: id,
+          conversationId,
+          error: describeError(error),
+        });
+      }
+    }
   }
 
   private async tick(id: string): Promise<void> {
@@ -514,6 +624,36 @@ export class InterviewService {
     })!;
     interviewBus.publish(id, 'completed', 'Interview cancelled by operator.');
     return updated;
+  }
+
+  /**
+   * Call the candidate again: clear the previous attempt's call, transcript,
+   * score and summary, then place a fresh outbound call. The single-call
+   * guard still applies.
+   */
+  async redial(id: string): Promise<InterviewRecord> {
+    const record = this.require(id);
+    if (record.status === 'calling' || record.status === 'in_progress') {
+      throw new ConflictError('This interview already has a live call.');
+    }
+
+    db.updateInterview(id, {
+      status: 'created',
+      agentId: null,
+      workflowId: null,
+      callId: null,
+      callStatus: null,
+      transcript: [],
+      scorecard: null,
+      summary: null,
+      summaryError: null,
+      error: null,
+      startedAt: null,
+      endedAt: null,
+      durationSeconds: null,
+    });
+    interviewBus.publish(id, 'redial', `Calling ${record.candidatePhone} again…`);
+    return this.start(id);
   }
 
   /**

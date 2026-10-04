@@ -99,7 +99,6 @@ export interface SystemStatus {
     assistant: ProvisionedAgent | null;
   };
   channels: Array<{ id: string; type: string; name: string; status: string; is_connected: boolean }>;
-  assistantChannels: Array<{ id: string; type: string; name: string; status: string; is_connected: boolean }>;
   warnings: string[];
   phoneNumbers: PhoneNumberRecord[];
 }
@@ -132,6 +131,7 @@ export const INTERVIEW_EVENT_TYPES = [
   'provisioning',
   'calling',
   'call_started',
+  'redial',
   'in_progress',
   'transcript',
   'call_ended',

@@ -341,23 +341,6 @@ export async function ensureProvisioned(): Promise<ProvisioningSummary> {
     }
   }
 
-  // The Hiring Assistant sends post-interview summaries and answers the owner,
-  // so it needs a connected WhatsApp channel.
-  if (assistant) {
-    try {
-      const channels = await bimpe.agents.channels.list(assistant.agentId);
-      const whatsapp = channels.find((channel) => channel.type === 'whatsapp');
-      if (!whatsapp) {
-        notes.push(
-          'The Hiring Assistant has no WhatsApp channel connected. Connect WhatsApp in the BimpeAI dashboard so it can message the owner.',
-        );
-      } else if (whatsapp.status !== 'enabled' && whatsapp.status !== 'connected') {
-        notes.push(`The Hiring Assistant's WhatsApp channel is "${whatsapp.status}".`);
-      }
-    } catch (error) {
-      notes.push(`Could not read hiring assistant channels: ${describeError(error)}`);
-    }
-  }
   if (!env.OWNER_WHATSAPP) {
     notes.push('OWNER_WHATSAPP is not set; post-interview summaries cannot be delivered.');
   }

@@ -18,10 +18,6 @@ export function SystemStatusPanel({
   const number = status?.phoneNumbers[0];
   const ready = Boolean(interviewer && evaluator);
   const allNotes = Array.from(new Set([...(status?.warnings ?? []), ...notes]));
-  const whatsappConnected = status?.assistantChannels.some(
-    (channel) =>
-      channel.type === 'whatsapp' && (channel.status === 'enabled' || channel.status === 'connected'),
-  );
 
   return (
     <Card className="space-y-4">
@@ -62,13 +58,6 @@ export function SystemStatusPanel({
         )}
         {status && <Badge value="created" label={`Voice: ${status.voiceProvider}`} />}
         {status && <Badge value="created" label={`Cap ${Math.round(status.config.maxSeconds / 60)} min`} />}
-        <Badge
-          value={whatsappConnected ? 'sent' : 'pending'}
-          label={whatsappConnected ? 'Assistant WhatsApp connected' : 'Assistant WhatsApp missing'}
-        />
-        {status?.config.ownerWhatsapp && (
-          <Badge value="created" label={`Owner ${status.config.ownerWhatsapp}`} />
-        )}
       </div>
 
       {!number && (

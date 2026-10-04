@@ -184,6 +184,7 @@ export default function App() {
               events={events[selected.id] ?? []}
               busy={busy}
               onStart={() => void run(() => api.startInterview(selected.id), selected.id)}
+              onRedial={() => void run(() => api.redialInterview(selected.id), selected.id)}
               onSimulate={() => void run(() => api.simulateInterview(selected.id), selected.id)}
               onReevaluate={() => void run(() => api.reevaluate(selected.id), selected.id)}
               onSendSummary={() => void run(() => api.sendSummary(selected.id), selected.id)}
